@@ -35,11 +35,6 @@ func NewLogger(opts ...LoggerOption) *TraceLogger {
 	return tl
 }
 
-const (
-	_oddNumberErrMsg    = "Ignored key without a value."
-	_nonStringKeyErrMsg = "Ignored key-value pairs with non-string keys."
-)
-
 // Named adds a sub-scope to the logger's name. See Logger.Named for details.
 func (l *TraceLogger) Named(name string) *TraceLogger {
 	return &TraceLogger{
@@ -72,29 +67,6 @@ func (l *TraceLogger) Context(ctx context.Context) *TraceLogger {
 
 // With adds a variadic number of fields to the logging context. It accepts a
 // mix of strongly-typed Field objects.
-//
-// For example,
-//   TraceLogger.With(
-//     "hello", "world",
-//     "failure", errors.New("oh no"),
-//     Stack(),
-//     "count", 42,
-//     "user", User{Name: "alice"},
-//  )
-// is the equivalent of
-//   unsugared.With(
-//     String("hello", "world"),
-//     String("failure", "oh no"),
-//     Stack(),
-//     Int("count", 42),
-//     Object("user", User{Name: "alice"}),
-//   )
-//
-// Note that the keys in key-value pairs should be strings. In development,
-// passing a non-string key panics. In production, the logger is more
-// forgiving: a separate error is logged, but the key-value pair is skipped
-// and execution continues. Passing an orphaned key triggers similar behavior:
-// panics in development and errors in production.
 func (t *TraceLogger) With(args ...zap.Field) *TraceLogger {
 	return &TraceLogger{base: t.base.With(args...)}
 }
