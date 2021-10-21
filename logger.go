@@ -3,8 +3,12 @@ package tracelog
 import (
 	"context"
 	"fmt"
+	"net/http"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
@@ -18,6 +22,7 @@ type TraceLogger struct {
 
 type LoggerOption func(*TraceLogger)
 
+// WithLogger sets the base logger to use in the TraceLogger.
 func WithLogger(lg *zap.Logger) LoggerOption {
 	return func(tl *TraceLogger) {
 		if tl != nil {
@@ -26,6 +31,7 @@ func WithLogger(lg *zap.Logger) LoggerOption {
 	}
 }
 
+// NewLogger instaniates a new instance our of logger.
 func NewLogger(opts ...LoggerOption) *TraceLogger {
 	tl := &TraceLogger{}
 	for _, opt := range opts {
@@ -36,28 +42,28 @@ func NewLogger(opts ...LoggerOption) *TraceLogger {
 }
 
 // Named adds a sub-scope to the logger's name. See Logger.Named for details.
-func (l *TraceLogger) Named(name string) *TraceLogger {
+func (tl *TraceLogger) Named(name string) *TraceLogger {
 	return &TraceLogger{
-		base: l.base.Named(name),
-		ctx:  context.Background(),
+		base: tl.base.Named(name),
+		ctx:  tl.ctx,
 	}
 }
 
-func (l *TraceLogger) Context(ctx context.Context) *TraceLogger {
-	tl := &TraceLogger{
-		base: l.base,
+// SetContext associates the `context.Context` in use with the instance of our logger.
+func (tl *TraceLogger) SetContext(ctx context.Context) *TraceLogger {
+	l := &TraceLogger{
+		base: tl.base,
 		ctx:  ctx,
 	}
 
-	span := trace.SpanFromContext(tl.ctx)
+	span := trace.SpanFromContext(l.ctx)
 	if span == nil {
-		fmt.Println("no span")
 		return tl
 	}
 
 	spanCtx := span.SpanContext()
 
-	return tl.With(
+	return l.With(
 		zap.String("traceID", spanCtx.TraceID().String()),
 		zap.String("dd.traceID", spanCtx.TraceID().String()),
 		zap.String("spanID", spanCtx.SpanID().String()),
@@ -67,63 +73,97 @@ func (l *TraceLogger) Context(ctx context.Context) *TraceLogger {
 
 // With adds a variadic number of fields to the logging context. It accepts a
 // mix of strongly-typed Field objects.
-func (t *TraceLogger) With(args ...zap.Field) *TraceLogger {
-	return &TraceLogger{base: t.base.With(args...)}
+func (tl *TraceLogger) With(args ...zap.Field) *TraceLogger {
+	return &TraceLogger{base: tl.base.With(args...)}
+}
+
+// FromRequest retrieves any HTTP Headers on the provided request and associates
+// the current TraceLogger's `context.Context`.
+func (tl *TraceLogger) FromRequest(r *http.Request) *TraceLogger {
+	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
+	return tl.SetContext(ctx)
+}
+
+// WithRequest tags the outgoing `http.Request` with HTTP Headers to associate any downstream
+// tracing with the provided `context.Context`.
+func (tl *TraceLogger) WithRequest(ctx context.Context, r *http.Request) *http.Request {
+	r2 := new(http.Request)
+	*r2 = *r
+
+	span := trace.SpanFromContext(r2.Context())
+	if span != nil {
+		attrs := semconv.NetAttributesFromHTTPRequest("tcp", r2)
+		attrs = append(attrs, semconv.EndUserAttributesFromHTTPRequest(r2)...)
+		attrs = append(attrs, semconv.HTTPServerAttributesFromHTTPRequest("http.server", r2.URL.String(), r2)...)
+
+		span.SetAttributes(attrs...)
+	}
+
+	r2 = r2.WithContext(ctx)
+
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(r2.Header))
+
+	return r2
 }
 
 // Debug uses fmt.Sprint to construct and log a message.
-func (t *TraceLogger) Debug(msg string, args ...interface{}) {
+func (tl *TraceLogger) Debug(msg string, args ...interface{}) {
 	fields, tags := parseArguments(args...)
-	tagSpan(t.ctx, tags...)
-	t.base.Debug(msg, fields...)
+	tagSpan(tl.ctx, tags...)
+	tl.base.Debug(msg, fields...)
 }
 
 // Info uses fmt.Sprint to construct and log a message.
-func (t *TraceLogger) Info(msg string, args ...interface{}) {
+func (tl *TraceLogger) Info(msg string, args ...interface{}) {
 	fields, tags := parseArguments(args...)
-	tagSpan(t.ctx, tags...)
-	t.base.Info(msg, fields...)
+	tagSpan(tl.ctx, tags...)
+	tl.base.Info(msg, fields...)
 }
 
 // Warn uses fmt.Sprint to construct and log a message.
-func (t *TraceLogger) Warn(msg string, args ...interface{}) {
+func (tl *TraceLogger) Warn(msg string, args ...interface{}) {
 	fields, tags := parseArguments(args...)
-	tagSpan(t.ctx, tags...)
-	t.base.Warn(msg, fields...)
+	tagSpan(tl.ctx, tags...)
+	tl.base.Warn(msg, fields...)
 }
 
 // Error uses fmt.Sprint to construct and log a message.
-func (t *TraceLogger) Error(msg string, args ...interface{}) {
+func (tl *TraceLogger) Error(msg string, args ...interface{}) {
 	fields, tags := parseArguments(args...)
-	tagSpan(t.ctx, tags...)
-	t.base.Error(msg, fields...)
+	tagSpan(tl.ctx, tags...)
+	tl.base.Error(msg, fields...)
 }
 
 // DPanic uses fmt.Sprint to construct and log a message. In development, the
 // logger then panics. (See DPanicLevel for details.)
-func (t *TraceLogger) DPanic(msg string, args ...interface{}) {
+func (tl *TraceLogger) DPanic(msg string, args ...interface{}) {
 	fields, tags := parseArguments(args...)
-	tagSpan(t.ctx, tags...)
-	t.base.DPanic(msg, fields...)
+	tagSpan(tl.ctx, tags...)
+	tl.base.DPanic(msg, fields...)
 }
 
 // Panic uses fmt.Sprint to construct and log a message, then panics.
-func (t *TraceLogger) Panic(msg string, args ...interface{}) {
+func (tl *TraceLogger) Panic(msg string, args ...interface{}) {
 	fields, tags := parseArguments(args...)
-	tagSpan(t.ctx, tags...)
-	t.base.Panic(msg, fields...)
+	tagSpan(tl.ctx, tags...)
+	tl.base.Panic(msg, fields...)
 }
 
 // Fatal uses fmt.Sprint to construct and log a message, then calls os.Exit.
-func (t *TraceLogger) Fatal(msg string, args ...interface{}) {
+func (tl *TraceLogger) Fatal(msg string, args ...interface{}) {
 	fields, tags := parseArguments(args...)
-	tagSpan(t.ctx, tags...)
-	t.base.Fatal(msg, fields...)
+	tagSpan(tl.ctx, tags...)
+	tl.base.Fatal(msg, fields...)
 }
 
 // Sync flushes any buffered log entries.
-func (t *TraceLogger) Sync() error {
-	return t.base.Sync()
+func (tl *TraceLogger) Sync() error {
+	if err := tl.base.Sync(); err != nil {
+		return fmt.Errorf("failed to sync logger: %w", err)
+	}
+
+	return nil
 }
 
 func parseArguments(args ...interface{}) ([]zap.Field, []attribute.KeyValue) {
